@@ -1,45 +1,59 @@
-# Four watchers on one clock
+# live-video-watchers
 
-The scripts behind our post on a live-video stutter from a DJI RC Plus 2. They ran on
-10 November 2026 against one controller, one aircraft on the ground and one home network.
-They are what we used, cleaned of our addresses and ids; they are not a product.
+Scripts for finding where live drone video gets lost on its way from the aircraft to a viewer's screen. We wrote them while chasing a stutter on a DJI Matrice 4E and RC Plus 2 controller, and we tell that story here: [Our drone video kept freezing for seconds at a time](https://nebli.ai/blog/drone-video-freezing-controller-wifi/).
+
+If your live video freezes for a second or more at a time, start with the five-minute check below. You need nothing but a laptop on the same Wi-Fi as the controller. The full setup after it is for engineers who want every layer on one timeline.
+
+These are the scripts as we ran them on November 10, 2026, with our addresses and ids removed. They are not a Nebli product and come with no support. They are MIT licensed: use them however you like.
+
+## The five-minute check: ping the controller while you stream
+
+1. Find the controller's address on your Wi-Fi. Your router's list of connected devices shows it.
+2. Start streaming from the controller as you normally would.
+3. On a laptop on the same Wi-Fi, ping the controller five times a second for a few minutes:
+
+   - macOS: `ping -i 0.2 <controller address>`
+   - Linux: `ping -i 0.2 -D <controller address>`
+   - Windows: `ping -t <controller address>` (once a second is the fastest Windows allows)
+
+4. Watch for replies that suddenly take a second or more, or stop altogether, at the moments the video freezes.
+
+If the pings stall when the video stalls, the controller or its Wi-Fi is holding its traffic, and a better server or player won't help. If the pings stay steady while the video freezes, look further down the line: the internet link, the streaming service, the player.
+
+For a control, ping a second device on the same Wi-Fi at the same time. If both stall together, suspect the network rather than the controller.
+
+## The full setup: four watchers on one clock
 
 | File | What it does |
 |---|---|
-| `watch-all.sh` | Pings the controller, the gateway and (optionally) a neighbour on the same access-point radio 5 times a second; over adb, samples the controller's own Wi-Fi bytes and RTMP socket 10 times a second, streams its Android log through `mask.pl`, and measures its clock offset. |
-| `mask.pl` | Masks stream keys, tokens, passwords and signed URLs in a log stream, line by line, before anything is written. |
-| `watch.mjs` | Opens a live-video page in headless Chrome (Playwright) and writes one JSON line a second with the browser's own WebRTC stats: frames decoded and dropped, freezeCount, totalFreezesDuration, packets lost, keyframe requests. |
-| `timeline.py` | Puts the ingest's idle lines, the ping blackouts and the viewer's stats on one timeline and counts how often they line up. |
-| `compare.py` | Per named time window: holes per minute, share of time in holes, longest hole, ping p99, blackout share. |
+| `watch-all.sh` | Pings the controller, the gateway and, if you give it one, a second device on the same access-point radio, five times a second. Over adb it also samples the controller's own Wi-Fi bytes and RTMP connection ten times a second, saves its Android log through `mask.pl`, and measures how far its clock is from the laptop's. |
+| `mask.pl` | Hides stream keys, tokens, passwords and signed URLs in a log, line by line, before anything is written to disk. |
+| `watch.mjs` | Opens a live-video page in headless Chrome and writes, once a second, the browser's own statistics for the incoming video: frames decoded and dropped, freezes and their total length, packets lost. |
+| `timeline.py` | Puts the ingest's gap lines, the ping blackouts and the viewer's freezes on one timeline and counts how often they line up. |
+| `compare.py` | For each time window you name: holes per minute, share of time in holes, longest hole, slowest pings. |
 
-## Running them
+### Running them
 
     ./watch-all.sh --controller <controller addr> --gateway <gateway addr> [--peer <addr>] --out run1
-    node watch.mjs 900 '<live page URL>'            # WATCH_STATE=<your storageState file> if it needs a sign-in
+    node watch.mjs 900 '<live page URL>'            # WATCH_STATE=<your storageState file> if the page needs a sign-in
     python3 timeline.py run-<time>.jsonl --ingest-log ingest.log --pings run1/ping-rc.txt --peer <controller addr> --all
     python3 compare.py --ingest-log ingest.log --date 2026-11-10 'ch 104|<controller addr>|run1|15:14:30|15:55:00'
 
-Needs macOS `ping` (for `--apple-time`; on Linux use `ping -D` and change the two parsers),
-`adb` with adb over the network enabled on the controller, Python 3.9+, Node 18+ with
-`playwright`, and Chrome.
+You need macOS `ping` (for its timestamps; on Linux use `ping -D` and change the two parsers), `adb` with network debugging turned on on the controller, Python 3.9 or later, Node 18 or later with Playwright, and Chrome.
 
-## Definitions
+One piece is not here: the ingest, the server that receives the controller's RTMP stream. Ours logged a line every time no bytes arrived for 0.3 s or more. Any RTMP server you can make log the gap between reads will do, written as JSON lines with a "time" field in this format:
 
-- **Ping blackout:** a reply slower than 150 ms. The replies queued behind it, each over
-  150 ms and smaller than the one before, are the same blackout; its length is the first
-  reply's round-trip time.
-- **Hole:** the ingest received no bytes on the controller's RTMP socket for 0.3 s or more.
-  Our ingest logged one line per hole:
-  `[dbg] SOCKET IDLE <peer>: nothing arrived for 3.47s, then 2896 bytes in one read`.
-  The ingest itself is not in this set; any RTMP server you can make log the gap between
-  reads that return bytes will do, in that line format, as JSON lines with a "time" field.
-- **Freeze:** whatever the browser counts as one (`freezeCount` in the WebRTC statistics).
+    [dbg] SOCKET IDLE <peer>: nothing arrived for 3.47s, then 2896 bytes in one read
 
-## Caveats
+## What the words mean
 
-- One clock: the pings, the ingest log and the viewer must carry the same machine's time.
-  The controller's own log is on its clock; `clock.txt` gives the offset to apply.
-- The adb sampling rides the same Wi-Fi link being measured. It is small traffic, but it is there.
-- `watch.mjs` keeps console lines starting `[player]` and treats responses under `/api/whep`
-  as the video session: those match the page we watched. Change them for yours.
-- `watch.mjs`'s storageState file holds your cookies: never publish it.
+- **Ping blackout:** a reply slower than 150 ms. The replies queued behind it, each over 150 ms and smaller than the one before, belong to the same blackout; its length is the first reply's round trip.
+- **Hole:** no bytes reached the ingest on the controller's RTMP connection for 0.3 s or more.
+- **Freeze:** whatever the browser counts as one (`freezeCount` in its WebRTC statistics).
+
+## Things to know before you trust the numbers
+
+- Everything except the controller's own log has to carry the same machine's clock. The controller's log runs on its own clock; `watch-all.sh` writes the offset to `clock.txt`, and you apply it by hand.
+- The adb sampling travels over the same Wi-Fi you are measuring. It is a small amount of traffic, but it is there.
+- `watch.mjs` was written for the page we watched: it keeps console lines that start with `[player]` and treats requests under `/api/whep` as the video session. Change both for your player.
+- The storageState file `watch.mjs` signs in with holds your cookies. Never publish it.
